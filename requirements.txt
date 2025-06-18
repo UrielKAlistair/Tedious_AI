@@ -1,0 +1,11 @@
+argparse
+fastapi
+httpx
+markdownify
+numpy
+semantic_text_splitter
+tqdm
+uvicorn
+google-genai
+pillow
+html2text
