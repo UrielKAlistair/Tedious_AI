@@ -1,15 +1,15 @@
-import json
 from pathlib import Path
-from bs4 import BeautifulSoup
-from openai import OpenAI
-import requests
+import httpx
 import base64
+import requests
 import time 
-from google import genai
-
+import json
 import os
+
+from bs4 import BeautifulSoup
+
+from google import genai
 import openai
-import time
 
 BASE_URL = "https://discourse.onlinedegree.iitm.ac.in"
 MAX_RETRIES = 5
@@ -32,24 +32,6 @@ Any specific technologies, file types, tools, or platforms visible (e.g., Flask,
 
 Avoid generic phrases like "this is an image of..."; just describe the content directly and concisely in one dense paragraph.
 """
-
-# Load from env
-key_string = os.getenv("OPENAI_API_KEYS")
-api_keys = key_string.split(",")
-model = ["gpt-4o-mini"]
-
-
-def call_openai_with_key_rotation(**kwargs):
-    for i, key in enumerate(api_keys):
-        for m in model:
-            openai.api_key = key.strip()
-            try:
-                return openai.chat.completions.create(**kwargs, model=m)
-            except Exception as e:
-                time.sleep(1)
-                print(f"[Key {i+1}] Error: {e}. Trying next key...")
-    raise RuntimeError("All API keys failed or rate-limited.")
-
 class RateLimiter:
     def __init__(self, requests_per_minute=60, requests_per_second=2):
         self.requests_per_minute = requests_per_minute
@@ -83,26 +65,59 @@ class RateLimiter:
 
 rate_limiter = RateLimiter(requests_per_minute=10, requests_per_second=1)
 
-def describe_image_with_openai(image_bytes):    
-    for attempt in range(MAX_RETRIES):
-        # Apply rate limiting
-        rate_limiter.wait_if_needed()
-        
-        response = call_openai_with_key_rotation(
-            messages=[
-                {"role": "user", "content": [
-                    {"type": "text", "text": DESCRIBE_IMAGE_PROMPT},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + image_bytes}}
-                ]}
-            ],
-            max_tokens=256,
-        )
+def describe_image_with_openai(image_bytes):
+    url = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('AIPROXY_TOKEN')}",
+        "Content-Type": "application/json"
+    }
+    
+    base64_data = image_bytes if image_bytes.startswith("iVBOR") else image_bytes.split(",")[-1]
+    
+    data = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": DESCRIBE_IMAGE_PROMPT},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64_data}}
+            ]}
+        ],
+        "max_tokens": 256
+    }
 
-    try:        
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"Error extracting description!!!")
-        return None
+    for attempt in range(MAX_RETRIES):
+        rate_limiter.wait_if_needed()
+        try:
+            response = httpx.post(url, headers=headers, json=data, timeout=60)
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"].strip()
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error {e.response.status_code}: {e.response.text}")
+        except Exception as e:
+            print(f"Error: {e}")
+        time.sleep(2)
+    
+    return None
+
+# def describe_image_with_openai(image_bytes):    
+#     for attempt in range(MAX_RETRIES):
+#         rate_limiter.wait_if_needed()
+        
+#         response = openai.chat.completions.create(model = "gpt-4o-mini",
+#             messages=[
+#                 {"role": "user", "content": [
+#                     {"type": "text", "text": DESCRIBE_IMAGE_PROMPT},
+#                     {"type": "image_url", "image_url": {"url": "data:image/png;base64," + image_bytes}}
+#                 ]}
+#             ],
+#             max_tokens=256,
+#         )
+
+#     try:        
+#         return response.choices[0].message.content.strip()
+#     except Exception as e:
+#         print(f"Error extracting description!!!")
+#         return None
 
 def describe_image_with_gemini(image_bytes):
     try:
