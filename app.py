@@ -15,8 +15,8 @@ app.add_middleware(
 async def api(request: Request):
     data = await request.json()
     print(data)
-    return JSONResponse({"message": "Dummy response works!", "answer":"Sorry, I'm working on it!"})
+    return JSONResponse({"message": "Dummy response works!", "answer":"42"})
 
 @app.get("/")
 async def root():
-    return JSONResponse({"message": "Server is up"})
+    return JSONResponse({"message": "Server is up", "answer":"42"})
