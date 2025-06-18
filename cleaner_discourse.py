@@ -63,7 +63,7 @@ class RateLimiter:
         self.request_times.append(current_time)
         self.last_request_time = current_time
 
-rate_limiter = RateLimiter(requests_per_minute=10, requests_per_second=1)
+rate_limiter = RateLimiter(requests_per_minute=50, requests_per_second=1)
 
 def describe_image_with_openai(image_bytes):
     url = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
@@ -161,7 +161,8 @@ def extract_posts_to_markdown(json_path, output_path):
                     continue
                 if "user_avatar" in img_url:
                     continue
-                
+                if "favicon" in img_url:
+                    continue
 
                 print("IMAGE CALL!!!")
                 print(img_url)
