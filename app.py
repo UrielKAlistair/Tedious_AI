@@ -1,21 +1,22 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-# CORS setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_origins=["*"],
+    allow_methods=["GET","POST","OPTIONS"],
     allow_headers=["*"],
 )
 
 @app.post("/api")
-async def api(query):
-    print(query)
-    return "Here is a dummy response to see if my endpoint works"
+async def api(request: Request):
+    data = await request.json()
+    print(data)
+    return JSONResponse({"message": "Dummy response works!"})
 
 @app.get("/")
-async def resp():
-    return "Here is a text message to let you know that the server is up and running!"
+async def root():
+    return JSONResponse({"message": "Server is up"})
