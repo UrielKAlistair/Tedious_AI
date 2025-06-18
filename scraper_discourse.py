@@ -4,6 +4,8 @@ import json
 
 BASE_URL = "https://discourse.onlinedegree.iitm.ac.in"
 COURSE_SLUG = "/c/courses/tds-kb/34.json"
+POSTS_BATCH_SIZE = 50
+
 
 def cookie_str_to_json(raw_cookie_string):
     cookies = {}
@@ -17,11 +19,16 @@ def cookie_str_to_json(raw_cookie_string):
 def get_relevant_topics(start_time = "2025-01-01T00:00:00.000Z", end_time = "2025-04-15T00:00:00.000Z"):
     '''
     Goes through the topics created within the TDS course page, and elimates the ones that are not relevant to the time range specified.
-    (created after the ending time, so cannot contain a relevant post, or the last post was made before the starting time)
+    (topic was created after the ending time, so cannot contain a relevant post, or the last post in the topic was made before the starting time)
     Remaining topics are potentially relevant, and their IDs are stored in a file. 
-    (The only way it can not contain a relevant post is if topic was created long before the start time, 
-    and all follow up posts wihin it made fall after the end time)
-    These "interesting" topics will then be scanned for relevant posts.
+
+    (The only way a topic passing this filter can **not** contain a relevant post is if the topic was created long before the start time, 
+    and all follow up posts wihin it made fall after the end time, thereby having no posts in the required time range.)
+    These "interesting" topics will then be scanned and if any of the posts in it are relevant, then the topic will be retained in the final pipeline.
+
+    It was considered that the posts within topics only in the time range could be used, to follow the problem statement by the word, 
+    but it doesn't make contextual sense to leave out the posts that these posts reply to, or the topic itself, 
+    so the whole topic is being retained if any post within it falls in the requested time range.
     '''
 
     my_cookie = cookie_str_to_json(os.getenv("DISCOURSE_COOKIE"))
@@ -59,26 +66,78 @@ def get_relevant_topics(start_time = "2025-01-01T00:00:00.000Z", end_time = "202
 
     return relevant_topics
 
-def get_posts_in_topic(topic_url):
+def get_posts_in_topic(topic_url, start_time="2025-01-01T00:00:00.000Z", end_time="2025-04-15T00:00:00.000Z"):
     '''
-    Goes through every post within a topic, and filters it by time range. 
+    Fetches all posts in a Discourse topic given by `topic_url`.
+    Discards the topic if none of its posts fall within a desired time range.
     Makes one single output file per topic. 
-    Adds only the relevant posts to the final output. 
     Also includes the topic metadata at the top of the file.
     '''
 
-    my_cookie = cookie_str_to_json(os.getenv("DISCOURSE_COOKIE"))
+    _, topic_id = topic_url.split("/")
     session = requests.Session()
-    session.cookies.update(my_cookie)
+    session.cookies.update(cookie_str_to_json(os.getenv("DISCOURSE_COOKIE")))
 
-    url = f"{BASE_URL}/t/{topic_url}.json"
-    response = session.get(url)
-    
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Failed to fetch topic {topic_url}: {response.status_code}")
+    try:
+        response = session.get(f"{BASE_URL}/t/{topic_url}.json", timeout=30)
+        response.raise_for_status()
+        topic_data = response.json()
+    except Exception as e:
+        print(f"Failed to fetch topic {topic_id}: {e}")
         return None
+
+    post_stream = topic_data.get("post_stream", {})
+    stream_ids = post_stream.get("stream", [])
+    loaded_posts = post_stream.get("posts", [])
+
+    loaded_ids = {p["id"] for p in loaded_posts if "id" in p}
+    missing_ids = [pid for pid in stream_ids if pid not in loaded_ids]
+
+    print(f"Topic {topic_id}: Total posts = {len(stream_ids)}, Loaded = {len(loaded_ids)}, Missing = {len(missing_ids)}")
+
+    # Fetch missing posts
+    additional_posts = []
+    for i in range(0, len(missing_ids), POSTS_BATCH_SIZE):
+        batch_ids = missing_ids[i:i + POSTS_BATCH_SIZE]
+        params = [("post_ids[]", pid) for pid in batch_ids]
+        batch_url = f"{BASE_URL}/t/{topic_id}/posts.json"
+
+        try:
+            batch_resp = session.get(batch_url, params=params, timeout=60)
+            batch_resp.raise_for_status()
+            batch_data = batch_resp.json()
+
+            if isinstance(batch_data, list):
+                additional_posts.extend(batch_data)
+            elif "post_stream" in batch_data and "posts" in batch_data["post_stream"]:
+                additional_posts.extend(batch_data["post_stream"]["posts"])
+            elif "posts" in batch_data:
+                additional_posts.extend(batch_data["posts"])
+            else:
+                print(f"Topic {topic_id}: Unexpected JSON in post batch: {str(batch_data)[:200]}...")
+        except Exception as e:
+            print(f"Failed to fetch batch for topic {topic_id} (IDs: {batch_ids}): {e}")
+
+    if additional_posts:
+        print(f"Topic {topic_id}: Fetched {len(additional_posts)} more posts.")
+        id_to_post = {p["id"]: p for p in loaded_posts}
+        for post in additional_posts:
+            id_to_post[post["id"]] = post
+
+        # Sort all posts by stream order
+        sorted_posts = [id_to_post[pid] for pid in stream_ids if pid in id_to_post]
+        topic_data["post_stream"]["posts"] = sorted_posts
+
+    def in_range(post):
+        return start_time <= post["created_at"] <= end_time
+       
+    if not any(in_range(p) for p in topic_data["post_stream"]["posts"]):
+        print(f"Topic {topic_id}: No posts in desired time range. Discarding.")
+        return None
+
+    print(f"Topic {topic_id}: Final post count = {len(topic_data['post_stream']['posts'])}")
+    return topic_data
+
 
 def fetch_discourse_data():
     if not os.path.exists("discourse_jsons/relevant_topics.txt"):
@@ -88,14 +147,19 @@ def fetch_discourse_data():
     else:
         with open("discourse_jsons/relevant_topics.txt", "r") as f:
             lines = f.readlines()
-            topics = [line.strip().split(",") for line in lines[1:] if line.strip()]
+            topics = [line.strip() for line in lines[1:] if line.strip()]
 
     for topic_url in topics:
         topic_slug, topic_id = topic_url.split("/")
         print(f"Fetching posts for topic {topic_slug.replace('-',' ')} (ID: {topic_id})...")
         if not os.path.exists(f"discourse_jsons/{topic_id}.json"):
             topic_details = get_posts_in_topic(topic_url)
+            if topic_details is None:
+                print(f"Skipping topic {topic_id} due to no relevant posts.")
+                continue
+
             with open(f"discourse_jsons/{topic_id}.json", "w") as f:
+                f.write(f"{topic_url}\n")
                 json.dump(topic_details, f)
 
 
