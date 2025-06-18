@@ -15,3 +15,7 @@ app.add_middleware(
 async def api(query):
     print(query)
     return "Here is a dummy response to see if my endpoint works"
+
+@app.get("/")
+async def resp():
+    return "Here is a text message to let you know that the server is up and running!"
