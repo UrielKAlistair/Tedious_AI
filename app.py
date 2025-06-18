@@ -14,7 +14,7 @@ app.add_middleware(
 @app.post("/api")
 async def api(request: Request):
     data = await request.json()
-    return JSONResponse(content={"answer": "42"})
+    return JSONResponse(content={"answer": "42", "links":"https://discourse.onlinedegree.iitm.ac.in/t/project1-virtual-ta-discussion-thread-tds-may-2025/176077"})
 
 @app.get("/")
 async def root():
